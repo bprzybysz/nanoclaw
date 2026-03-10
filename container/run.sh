@@ -13,10 +13,16 @@ if [ "${DEV_MODE:-}" = "true" ]; then
   EXTRA_ARGS+=("--entrypoint" "sh" "-c" "cd /workspace/agent-runner && cp -r /workspace/agent-src/* src/ && npx tsc --outDir /tmp/dist && node /tmp/dist/index.js < /tmp/input.json")
 fi
 
+# Write secrets to a temp env file — keeps them out of `ps aux` output
+_SECRETS_FILE=$(mktemp)
+chmod 600 "${_SECRETS_FILE}"
+trap 'rm -f "${_SECRETS_FILE}"' EXIT
+printf 'ANTHROPIC_API_KEY=%s\nINTEGRA_API_KEY=%s\n' \
+  "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}" "${INTEGRA_API_KEY:-}" > "${_SECRETS_FILE}"
+
 exec $RUNTIME run -it --rm \
-  -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}" \
+  --env-file "${_SECRETS_FILE}" \
   -e INTEGRA_MCP_URL="$INTEGRA_MCP_URL" \
-  -e INTEGRA_API_KEY="${INTEGRA_API_KEY:-}" \
   -e PLAYWRIGHT_MCP_URL="$PLAYWRIGHT_MCP_URL" \
   ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   "$IMAGE"
