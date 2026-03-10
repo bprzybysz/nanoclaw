@@ -408,7 +408,8 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__integra__*'
+        'mcp__integra__*',
+        'mcp__playwright__*'
       ],
       model: 'claude-sonnet-4-6',
       thinking: { type: 'adaptive' },
@@ -430,6 +431,13 @@ async function runQuery(
         integra: {
           type: 'sse' as const,
           url: `http://${process.env.INTEGRA_MCP_URL || 'host.containers.internal:8765'}/sse`,
+          headers: process.env.INTEGRA_API_KEY
+            ? { Authorization: `Bearer ${process.env.INTEGRA_API_KEY}` }
+            : undefined,
+        },
+        playwright: {
+          type: 'sse' as const,
+          url: `http://${process.env.PLAYWRIGHT_MCP_URL || 'host.containers.internal:8766'}/sse`,
         },
       },
       hooks: {
