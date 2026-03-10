@@ -407,8 +407,12 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__integra__*'
       ],
+      model: 'claude-sonnet-4-6',
+      thinking: { type: 'adaptive' },
+      effort: 'low',
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -422,6 +426,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        integra: {
+          type: 'sse' as const,
+          url: `http://${process.env.INTEGRA_MCP_URL || 'host.containers.internal:8765'}/sse`,
         },
       },
       hooks: {

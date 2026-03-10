@@ -62,3 +62,10 @@ systemctl --user restart nanoclaw
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Integra MCP Integration
+
+Agent accesses Integra tools via SSE at `host.containers.internal:8765`.
+No mounts needed — all tools accessed over HTTP.
+Config: `INTEGRA_MCP_URL` env var (default: host.containers.internal:8765).
+Model: claude-sonnet-4-6, adaptive thinking, low effort.
