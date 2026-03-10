@@ -4,6 +4,7 @@ set -euo pipefail
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 IMAGE="nanoclaw-agent:latest"
 INTEGRA_MCP_URL="${INTEGRA_MCP_URL:-host.containers.internal:8765}"
+PLAYWRIGHT_MCP_URL="${PLAYWRIGHT_MCP_URL:-host.containers.internal:8766}"
 
 EXTRA_ARGS=()
 if [ "${DEV_MODE:-}" = "true" ]; then
@@ -15,5 +16,7 @@ fi
 exec $RUNTIME run -it --rm \
   -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}" \
   -e INTEGRA_MCP_URL="$INTEGRA_MCP_URL" \
+  -e INTEGRA_API_KEY="${INTEGRA_API_KEY:-}" \
+  -e PLAYWRIGHT_MCP_URL="$PLAYWRIGHT_MCP_URL" \
   ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   "$IMAGE"
