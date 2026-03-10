@@ -10,10 +10,14 @@ IMAGE_NAME="nanoclaw-agent"
 TAG="${1:-latest}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-container}"
 
+# Enable BuildKit for cache mounts and faster builds
+export BUILDKIT_PROGRESS=plain
+export DOCKER_BUILDKIT=1
+
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" .
+${CONTAINER_RUNTIME} build --layers -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"
