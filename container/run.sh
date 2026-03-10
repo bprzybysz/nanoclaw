@@ -15,5 +15,5 @@ fi
 exec $RUNTIME run -it --rm \
   -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY required}" \
   -e INTEGRA_MCP_URL="$INTEGRA_MCP_URL" \
-  "${EXTRA_ARGS[@]}" \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   "$IMAGE"

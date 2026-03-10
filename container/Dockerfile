@@ -3,35 +3,37 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium
-RUN apt-get update && apt-get install -y \
+# Install system dependencies for Chromium (single layer, sorted, no recommends)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     chromium \
+    curl \
     fonts-liberation \
     fonts-noto-cjk \
     fonts-noto-color-emoji \
-    libgbm1 \
-    libnss3 \
+    git \
+    libasound2 \
     libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
     libgtk-3-0 \
+    libnss3 \
+    libpangocairo-1.0-0 \
     libx11-xcb1 \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxshmfence1 \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+    libxshmfence1
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser and claude-code globally (cached npm)
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g agent-browser @anthropic-ai/claude-code
 
 # Create app directory
 WORKDIR /app
@@ -39,8 +41,9 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY agent-runner/package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies (cached npm)
+RUN --mount=type=cache,target=/root/.npm \
+    npm install
 
 # Copy source code
 COPY agent-runner/ ./
