@@ -26,6 +26,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -190,8 +191,11 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, {
+      recursive: true,
+      filter: (src) => !src.includes('.build-cache'),
+    });
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -236,6 +240,14 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass INTEGRA_API_KEY via --env-file (keeps secret out of ps aux)
+  const integraSecrets = readEnvFile(['INTEGRA_API_KEY']);
+  if (integraSecrets.INTEGRA_API_KEY) {
+    const tmpFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
+    fs.writeFileSync(tmpFile, `INTEGRA_API_KEY=${integraSecrets.INTEGRA_API_KEY}\n`, { mode: 0o600 });
+    args.push('--env-file', tmpFile);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -434,6 +446,11 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+
+      // Clean up secrets env file
+      const secretsFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
+      try { fs.unlinkSync(secretsFile); } catch { /* may not exist */ }
+
       const duration = Date.now() - startTime;
 
       if (timedOut) {
