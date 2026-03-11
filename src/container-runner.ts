@@ -246,7 +246,11 @@ function buildContainerArgs(
   const integraSecrets = readEnvFile(['INTEGRA_API_KEY']);
   if (integraSecrets.INTEGRA_API_KEY) {
     const tmpFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
-    fs.writeFileSync(tmpFile, `INTEGRA_API_KEY=${integraSecrets.INTEGRA_API_KEY}\n`, { mode: 0o600 });
+    fs.writeFileSync(
+      tmpFile,
+      `INTEGRA_API_KEY=${integraSecrets.INTEGRA_API_KEY}\n`,
+      { mode: 0o600 },
+    );
     args.push('--env-file', tmpFile);
   }
 
@@ -449,7 +453,11 @@ export async function runContainerAgent(
 
       // Clean up secrets env file
       const secretsFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
-      try { fs.unlinkSync(secretsFile); } catch { /* may not exist */ }
+      try {
+        fs.unlinkSync(secretsFile);
+      } catch {
+        /* may not exist */
+      }
 
       const duration = Date.now() - startTime;
 
