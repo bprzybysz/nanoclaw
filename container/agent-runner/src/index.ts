@@ -19,6 +19,15 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+const QUERY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes of inactivity
+
+class QueryTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`query() timed out after ${ms}ms of inactivity`);
+    this.name = 'QueryTimeoutError';
+  }
+}
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -389,93 +398,120 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  for await (const message of query({
-    prompt: stream,
-    options: {
-      cwd: '/workspace/group',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        'mcp__integra__*',
-        'mcp__playwright__*'
-      ],
-      model: 'claude-sonnet-4-6',
-      thinking: { type: 'adaptive' },
-      effort: 'low',
-      env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        integra: {
-          type: 'sse' as const,
-          url: `http://${process.env.INTEGRA_MCP_URL || 'host.containers.internal:8765'}/sse`,
-          headers: process.env.INTEGRA_API_KEY
-            ? { Authorization: `Bearer ${process.env.INTEGRA_API_KEY}` }
-            : undefined,
-        },
-        playwright: {
-          type: 'sse' as const,
-          url: `http://${process.env.PLAYWRIGHT_MCP_URL || 'host.containers.internal:8766'}/sse`,
-        },
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-      },
-    }
-  })) {
-    messageCount++;
-    const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-    log(`[msg #${messageCount}] type=${msgType}`);
+  // Activity-based timeout: resets on each message from SDK
+  let timeoutReject: ((err: QueryTimeoutError) => void) | null = null;
+  let timeoutId: ReturnType<typeof setTimeout>;
 
-    if (message.type === 'assistant' && 'uuid' in message) {
-      lastAssistantUuid = (message as { uuid: string }).uuid;
-    }
+  const resetTimeout = () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      stream.end(); // Close input side to prevent leaks
+      timeoutReject?.(new QueryTimeoutError(QUERY_TIMEOUT_MS));
+    }, QUERY_TIMEOUT_MS);
+  };
 
-    if (message.type === 'system' && message.subtype === 'init') {
-      newSessionId = message.session_id;
-      log(`Session initialized: ${newSessionId}`);
-    }
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutReject = reject;
+  });
 
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as { task_id: string; status: string; summary: string };
-      log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
-    }
+  resetTimeout(); // Start initial timeout
 
-    if (message.type === 'result') {
-      resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
-    }
+  try {
+    await Promise.race([
+      (async () => {
+        for await (const message of query({
+          prompt: stream,
+          options: {
+            cwd: '/workspace/group',
+            additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+            resume: sessionId,
+            resumeSessionAt: resumeAt,
+            systemPrompt: globalClaudeMd
+              ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+              : undefined,
+            allowedTools: [
+              'Bash',
+              'Read', 'Write', 'Edit', 'Glob', 'Grep',
+              'WebSearch', 'WebFetch',
+              'Task', 'TaskOutput', 'TaskStop',
+              'TeamCreate', 'TeamDelete', 'SendMessage',
+              'TodoWrite', 'ToolSearch', 'Skill',
+              'NotebookEdit',
+              'mcp__nanoclaw__*',
+              'mcp__walter__*',
+              'mcp__playwright__*'
+            ],
+            model: 'claude-sonnet-4-6',
+            thinking: { type: 'adaptive' },
+            effort: 'low',
+            env: sdkEnv,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            settingSources: ['project', 'user'],
+            mcpServers: {
+              nanoclaw: {
+                command: 'node',
+                args: [mcpServerPath],
+                env: {
+                  NANOCLAW_CHAT_JID: containerInput.chatJid,
+                  NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+                  NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+                },
+              },
+              walter: {
+                type: 'sse' as const,
+                url: `http://${process.env.WALTER_MCP_URL || 'host.containers.internal:8765'}/sse`,
+                headers: (process.env.WALTER_API_KEY || process.env.INTEGRA_API_KEY)
+                  ? { Authorization: `Bearer ${process.env.WALTER_API_KEY || process.env.INTEGRA_API_KEY}` }
+                  : undefined,
+              },
+              playwright: {
+                type: 'sse' as const,
+                url: `http://${process.env.PLAYWRIGHT_MCP_URL || 'host.containers.internal:8766'}/sse`,
+              },
+            },
+            hooks: {
+              PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+            },
+          }
+        })) {
+          resetTimeout(); // Activity detected — reset timeout
+          messageCount++;
+          const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
+          log(`[msg #${messageCount}] type=${msgType}`);
+
+          if (message.type === 'assistant' && 'uuid' in message) {
+            lastAssistantUuid = (message as { uuid: string }).uuid;
+          }
+
+          if (message.type === 'system' && message.subtype === 'init') {
+            newSessionId = message.session_id;
+            log(`Session initialized: ${newSessionId}`);
+          }
+
+          if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
+            const tn = message as { task_id: string; status: string; summary: string };
+            log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
+          }
+
+          if (message.type === 'result') {
+            resultCount++;
+            const textResult = 'result' in message ? (message as { result?: string }).result : null;
+            log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+            writeOutput({
+              status: 'success',
+              result: textResult || null,
+              newSessionId
+            });
+          }
+        }
+      })(),
+      timeoutPromise,
+    ]);
+  } finally {
+    clearTimeout(timeoutId!);
+    ipcPolling = false;
   }
-
-  ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
