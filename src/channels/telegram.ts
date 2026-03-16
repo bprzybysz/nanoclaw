@@ -1,4 +1,4 @@
-import { Api, Bot } from 'grammy';
+import { Api, Bot, GrammyError } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -46,6 +46,8 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private reconnectAttempts = 0;
+  private static MAX_RECONNECT_ATTEMPTS = 3;
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
@@ -203,9 +205,43 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
     this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
 
-    // Handle errors gracefully
-    this.bot.catch((err) => {
-      logger.error({ err: err.message }, 'Telegram bot error');
+    // Handle errors — recover from 409 (concurrent polling conflict)
+    this.bot.catch((botError) => {
+      const err = botError.error;
+      if (err instanceof GrammyError && err.error_code === 409) {
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts > TelegramChannel.MAX_RECONNECT_ATTEMPTS) {
+          logger.error(
+            'Telegram 409: max reconnect attempts reached, giving up',
+          );
+          return;
+        }
+        logger.warn(
+          { attempt: this.reconnectAttempts, err: err.message },
+          'Telegram 409: waiting 35s for old long-poll to expire, then reconnecting',
+        );
+        setTimeout(async () => {
+          try {
+            await this.bot!.stop();
+            await this.bot!.start({
+              onStart: (botInfo) => {
+                this.reconnectAttempts = 0;
+                logger.info(
+                  { username: botInfo.username },
+                  'Telegram bot reconnected after 409',
+                );
+              },
+            });
+          } catch (restartErr) {
+            logger.error(
+              { err: restartErr },
+              'Telegram bot failed to reconnect after 409',
+            );
+          }
+        }, 35_000);
+      } else {
+        logger.error({ err: botError.message }, 'Telegram bot error');
+      }
     });
 
     // Start polling — returns a Promise that resolves when started

@@ -24,6 +24,7 @@ else
   echo "Build cache hit — skipping tsc" >&2
 fi
 
-ln -sf /app/node_modules "$DIST_DIR/node_modules"
+rm -f "$DIST_DIR/node_modules"
+ln -s /app/node_modules "$DIST_DIR/node_modules"
 cat > /tmp/input.json
 node "$DIST_DIR/index.js" < /tmp/input.json

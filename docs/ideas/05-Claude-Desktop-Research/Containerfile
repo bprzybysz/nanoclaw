@@ -1,0 +1,39 @@
+# Containerfile — OCI-compliant. Works with Apple Container, Podman, Docker.
+# Pattern: multi-stage build → minimal runtime image, no dev deps in prod.
+
+# ── Stage 1: dependency resolver ──────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# uv for fast, deterministic installs
+RUN pip install --no-cache-dir uv
+
+COPY requirements.txt .
+RUN uv pip install --system --no-cache -r requirements.txt
+
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+# Non-root user — required for Apple Container security model
+RUN useradd --create-home --uid 1000 diary
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy app source
+COPY --chown=diary:diary . .
+
+# Ensure data directory exists for PicklePersistence mount
+RUN mkdir -p /app/data && chown diary:diary /app/data
+
+USER diary
+
+# Health probe — Apple Container uses this for readiness
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "from config import get_settings; get_settings()" || exit 1
+
+ENTRYPOINT ["python", "bot.py"]
