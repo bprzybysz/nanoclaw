@@ -461,8 +461,8 @@ async function runQuery(
               walter: {
                 type: 'sse' as const,
                 url: `http://${process.env.WALTER_MCP_URL || 'host.containers.internal:8765'}/sse`,
-                headers: (process.env.WALTER_API_KEY || process.env.INTEGRA_API_KEY)
-                  ? { Authorization: `Bearer ${process.env.WALTER_API_KEY || process.env.INTEGRA_API_KEY}` }
+                headers: process.env.WALTER_API_KEY
+                  ? { Authorization: `Bearer ${process.env.WALTER_API_KEY}` }
                   : undefined,
               },
               playwright: {
