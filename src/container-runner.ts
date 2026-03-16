@@ -242,13 +242,13 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
-  // Pass INTEGRA_API_KEY via --env-file (keeps secret out of ps aux)
-  const integraSecrets = readEnvFile(['INTEGRA_API_KEY']);
-  if (integraSecrets.INTEGRA_API_KEY) {
+  // Pass WALTER_API_KEY via --env-file (keeps secret out of ps aux)
+  const walterSecrets = readEnvFile(['WALTER_API_KEY']);
+  if (walterSecrets.WALTER_API_KEY) {
     const tmpFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
     fs.writeFileSync(
       tmpFile,
-      `INTEGRA_API_KEY=${integraSecrets.INTEGRA_API_KEY}\n`,
+      `WALTER_API_KEY=${walterSecrets.WALTER_API_KEY}\n`,
       { mode: 0o600 },
     );
     args.push('--env-file', tmpFile);
