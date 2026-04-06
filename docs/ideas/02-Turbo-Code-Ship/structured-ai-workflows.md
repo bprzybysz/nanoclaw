@@ -17,29 +17,23 @@ AI coding agents are powerful but non-deterministic. The pattern that Stripe (Mi
 
 ## The Pattern (Generic)
 
-```
-Entry Point
-    |
-    v
-[DETERMINISTIC] Context Curation
-    - Gather docs, tickets, relevant code
-    - Select subset of tools for the agent
-    |
-    v
-[AGENTIC] AI Writes Code
-    |
-    v
-[DETERMINISTIC] Lint + Type Check + Tests
-    |
-    +--FAIL--> [AGENTIC] AI Fixes --> back to gate
-    |
-    +--PASS
-    |
-    v
-[HUMAN] Review --> Merge
+```mermaid
+flowchart TD
+    A[Entry Point] --> B[Context Curation<br/>Gather docs, tickets, relevant code<br/>Select subset of tools for the agent]
+    B --> C([AI Writes Code])
+    C --> D[Lint + Type Check + Tests]
+    D -->|FAIL| E([AI Fixes])
+    E --> D
+    D -->|PASS| F{{Review → Merge}}
+
+    style B fill:#4a9,stroke:#333,color:#fff
+    style D fill:#4a9,stroke:#333,color:#fff
+    style C fill:#69f,stroke:#333,color:#fff
+    style E fill:#69f,stroke:#333,color:#fff
+    style F fill:#f94,stroke:#333,color:#fff
 ```
 
-Key: **Clouds = agentic** (non-deterministic), **Squares = deterministic** (guaranteed to run).
+Key: **Green = deterministic** (guaranteed to run), **Blue = agentic** (non-deterministic), **Orange = human**.
 
 *See: `01-high-level-pattern-1m45s.png`*
 
@@ -61,30 +55,27 @@ Key: **Clouds = agentic** (non-deterministic), **Squares = deterministic** (guar
 
 ### Minions Workflow
 
-```
-Slack / CLI
-    |
-    v
-[DET] Context Curation
-    - MCP tools search tickets + docs
-    - Select ~15 tools from 500
-    |
-    v
-[AGENT] Implement (in isolated devbox)
-    |
-    v
-[DET] Lint + Sorbet (type checking)
-    |
-    +--FAIL--> [AGENT] Fix lint errors --> back
-    |
-    v
-[DET] CI / 3M+ Tests (distributed, <15 min)
-    |
-    +--FAIL (max 2x)--> [AGENT] Fix --> back
-    +--FAIL (3rd)--> escalate to human
-    |
-    v
-[HUMAN] Review --> Merge
+```mermaid
+flowchart TD
+    A[Slack / CLI] --> B[Context Curation<br/>Search tickets + docs<br/>Select ~15 tools from 500]
+    B --> C([Implement\nin isolated devbox])
+    C --> D[Lint + Sorbet\ntype checking]
+    D -->|FAIL| E([Fix lint errors])
+    E --> D
+    D -->|PASS| F[CI / 3M+ Tests<br/>distributed, under 15 min]
+    F -->|"FAIL (max 2x)"| G([Fix])
+    G --> F
+    F -->|"FAIL (3rd)"| H{{Escalate to human}}
+    F -->|PASS| I{{Review → Merge}}
+
+    style B fill:#4a9,stroke:#333,color:#fff
+    style D fill:#4a9,stroke:#333,color:#fff
+    style F fill:#4a9,stroke:#333,color:#fff
+    style C fill:#69f,stroke:#333,color:#fff
+    style E fill:#69f,stroke:#333,color:#fff
+    style G fill:#69f,stroke:#333,color:#fff
+    style H fill:#f94,stroke:#333,color:#fff
+    style I fill:#f94,stroke:#333,color:#fff
 ```
 
 *See: `04-piv-loop-diagram-14m52s.png`, `05-your-workflow-detail-16m00s.png`*
@@ -105,33 +96,31 @@ Slack / CLI
 Cole Medin's generalization for any engineer:
 
 ### Phase 1: PLANNING
-```
-GitHub Issue / Feature Request
-    |
-    v
-[AGENT] Plan implementation
-    |
-    v
-[HUMAN] Iterate on plan (validate scope, tests, success criteria)
-    |
-    v
-Plan Artifact (structured doc)
+```mermaid
+flowchart TD
+    A[GitHub Issue / Feature Request] --> B([Plan implementation])
+    B --> C{{Iterate on plan<br/>validate scope, tests, success criteria}}
+    C --> D[Plan Artifact]
+
+    style B fill:#69f,stroke:#333,color:#fff
+    style C fill:#f94,stroke:#333,color:#fff
+    style D fill:#4a9,stroke:#333,color:#fff
 ```
 
 ### Phase 2: IMPLEMENTATION (fresh context window!)
-```
-Plan Artifact --> NEW agent session
-    |
-    v
-[AGENT] Implement (plan as context)
-    |
-    v
-[DET] Lint + Types + Tests (ESLint, mypy, pytest, etc.)
-    |
-    +--FAIL--> [AGENT] Fix --> back to gate
-    |
-    v
-PR Review --> Merge
+```mermaid
+flowchart TD
+    A[Plan Artifact] -->|new agent session| B([Implement<br/>plan as context])
+    B --> C[Lint + Types + Tests<br/>ESLint, mypy, pytest, etc.]
+    C -->|FAIL| D([Fix])
+    D --> C
+    C -->|PASS| E{{PR Review → Merge}}
+
+    style A fill:#4a9,stroke:#333,color:#fff
+    style C fill:#4a9,stroke:#333,color:#fff
+    style B fill:#69f,stroke:#333,color:#fff
+    style D fill:#69f,stroke:#333,color:#fff
+    style E fill:#f94,stroke:#333,color:#fff
 ```
 
 ### Critical Details
