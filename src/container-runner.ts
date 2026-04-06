@@ -450,7 +450,10 @@ export async function runContainerAgent(
         fs.unlinkSync(secretsFile);
       } catch (err: unknown) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-          logger.warn({ secretsFile, err }, 'Failed to delete secrets env file');
+          logger.warn(
+            { secretsFile, err },
+            'Failed to delete secrets env file',
+          );
         }
       }
 

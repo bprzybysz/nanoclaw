@@ -23,7 +23,8 @@ export const CONTAINER_HOST_GATEWAY = detectHostGateway();
 
 function detectHostGateway(): string {
   // Allow override via env var
-  if (process.env.CONTAINER_HOST_GATEWAY) return process.env.CONTAINER_HOST_GATEWAY;
+  if (process.env.CONTAINER_HOST_GATEWAY)
+    return process.env.CONTAINER_HOST_GATEWAY;
 
   if (os.platform() === 'darwin') {
     // Apple Containers: detect bridge100 IPv4 address
@@ -153,18 +154,24 @@ export function ensureContainerRuntimeRunning(): void {
 export function cleanupOrphans(): void {
   try {
     // Apple Containers: no --filter flag, use --format json and filter in JS
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ls -a --format json`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
-    );
+    const output = execSync(`${CONTAINER_RUNTIME_BIN} ls -a --format json`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      encoding: 'utf-8',
+    });
     if (!output.trim()) return;
 
     let containers: Array<{ id: string; names?: string; name?: string }>;
     try {
       containers = JSON.parse(output);
     } catch (jsonErr) {
-      logger.debug({ jsonErr }, 'container ls JSON parse failed, trying line-by-line');
-      containers = output.trim().split('\n').map((l) => JSON.parse(l));
+      logger.debug(
+        { jsonErr },
+        'container ls JSON parse failed, trying line-by-line',
+      );
+      containers = output
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
     }
 
     const orphans = containers
