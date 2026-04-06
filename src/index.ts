@@ -73,8 +73,8 @@ function loadState(): void {
   const agentTs = getRouterState('last_agent_timestamp');
   try {
     lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
-  } catch {
-    logger.warn('Corrupted last_agent_timestamp in DB, resetting');
+  } catch (err) {
+    logger.warn({ rawValue: agentTs?.slice(0, 200), err }, 'Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
   sessions = getAllSessions();
@@ -134,7 +134,9 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
 
 /** Start a typing indicator loop that fires every 4.5s (under Telegram's 5s expiry). */
 export function startTypingLoop(channel: Channel, chatJid: string): () => void {
-  const send = () => channel.setTyping?.(chatJid, true)?.catch(() => {});
+  const send = () => channel.setTyping?.(chatJid, true)?.catch((err) => {
+    logger.debug({ chatJid, err }, 'Typing indicator failed');
+  });
   send();
   const iv = setInterval(send, 4_500);
   return () => clearInterval(iv);

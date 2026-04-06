@@ -8,16 +8,15 @@ cd "$SCRIPT_DIR"
 
 IMAGE_NAME="nanoclaw-agent"
 TAG="${1:-latest}"
-CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-container}"
 
-# Enable BuildKit for cache mounts and faster builds
+# Progress output
 export BUILDKIT_PROGRESS=plain
-export DOCKER_BUILDKIT=1
 
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-${CONTAINER_RUNTIME} build --layers -t "${IMAGE_NAME}:${TAG}" .
+${CONTAINER_RUNTIME} build --dns 8.8.8.8 -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"

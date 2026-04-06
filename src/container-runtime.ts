@@ -1,6 +1,9 @@
 /**
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
+ *
+ * Runtime: Apple Containers (macOS) — `container` CLI via brew.
+ * Containers are lightweight VMs using vmnet. The host is reachable via bridge100 gateway.
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
@@ -9,28 +12,61 @@ import os from 'os';
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
-export const CONTAINER_RUNTIME_BIN = 'docker';
+export const CONTAINER_RUNTIME_BIN = 'container';
 
-/** Hostname containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
+/**
+ * IP address containers use to reach the host machine.
+ * Apple Containers uses vmnet bridging — the host is at bridge100's IPv4 address.
+ * Falls back to 192.168.64.1 (vmnet default) if interface detection fails.
+ */
+export const CONTAINER_HOST_GATEWAY = detectHostGateway();
+
+function detectHostGateway(): string {
+  // Allow override via env var
+  if (process.env.CONTAINER_HOST_GATEWAY) return process.env.CONTAINER_HOST_GATEWAY;
+
+  if (os.platform() === 'darwin') {
+    // Apple Containers: detect bridge100 IPv4 address
+    const ifaces = os.networkInterfaces();
+    const bridge = ifaces['bridge100'];
+    if (bridge) {
+      const ipv4 = bridge.find((a) => a.family === 'IPv4');
+      if (ipv4) return ipv4.address;
+    }
+    // vmnet default when bridge100 isn't up yet (created on first container run)
+    return '192.168.64.1';
+  }
+
+  // Linux: Docker's host.docker.internal via --add-host
+  return 'host.docker.internal';
+}
 
 /**
  * Address the credential proxy binds to.
- * Docker Desktop (macOS): 127.0.0.1 — the VM routes host.docker.internal to loopback.
- * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it,
- *   falling back to 0.0.0.0 if the interface isn't found.
+ * Apple Containers (macOS): bind to bridge100 IP so containers can reach it via vmnet.
+ * Linux: bind to docker0 bridge IP.
  */
 export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
-  if (os.platform() === 'darwin') return '127.0.0.1';
+  if (os.platform() === 'darwin') {
+    // Apple Containers: proxy must be reachable from the VM via bridge100
+    // Binding to the bridge IP allows container → host communication
+    const ifaces = os.networkInterfaces();
+    const bridge = ifaces['bridge100'];
+    if (bridge) {
+      const ipv4 = bridge.find((a) => a.family === 'IPv4');
+      if (ipv4) return ipv4.address;
+    }
+    // Fallback: 0.0.0.0 binds all interfaces (works but less secure)
+    return '0.0.0.0';
+  }
 
   // WSL uses Docker Desktop (same VM routing as macOS) — loopback is correct.
-  // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
+  // Bare-metal Linux: bind to the docker0 bridge IP
   const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
@@ -42,7 +78,8 @@ function detectProxyBindHost(): string {
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
-  // On Linux, host.docker.internal isn't built-in — add it explicitly
+  // Apple Containers: no --add-host flag; containers reach host via bridge100 IP
+  // Linux (Docker): host.docker.internal isn't built-in — add it explicitly
   if (os.platform() === 'linux') {
     return ['--add-host=host.docker.internal:host-gateway'];
   }
@@ -65,12 +102,24 @@ export function stopContainer(name: string): string {
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+    execSync(`${CONTAINER_RUNTIME_BIN} system status`, {
       stdio: 'pipe',
       timeout: 10000,
     });
     logger.debug('Container runtime already running');
   } catch (err) {
+    // Try starting the runtime
+    try {
+      execSync(`brew services start ${CONTAINER_RUNTIME_BIN}`, {
+        stdio: 'pipe',
+        timeout: 30000,
+      });
+      logger.info('Started container runtime via brew services');
+      return;
+    } catch (brewErr) {
+      logger.warn({ brewErr }, 'brew services start container also failed');
+    }
+
     logger.error({ err }, 'Failed to reach container runtime');
     console.error(
       '\n╔════════════════════════════════════════════════════════════════╗',
@@ -85,13 +134,13 @@ export function ensureContainerRuntimeRunning(): void {
       '║  Agents cannot run without a container runtime. To fix:        ║',
     );
     console.error(
-      '║  1. Ensure Docker is installed and running                     ║',
+      '║  1. brew install container                                      ║',
     );
     console.error(
-      '║  2. Run: docker info                                           ║',
+      '║  2. container system kernel set --recommended                   ║',
     );
     console.error(
-      '║  3. Restart NanoClaw                                           ║',
+      '║  3. brew services start container                               ║',
     );
     console.error(
       '╚════════════════════════════════════════════════════════════════╝\n',
@@ -103,16 +152,30 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
+    // Apple Containers: no --filter flag, use --format json and filter in JS
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ls -a --format json`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    const orphans = output.trim().split('\n').filter(Boolean);
+    if (!output.trim()) return;
+
+    let containers: Array<{ id: string; names?: string; name?: string }>;
+    try {
+      containers = JSON.parse(output);
+    } catch (jsonErr) {
+      logger.debug({ jsonErr }, 'container ls JSON parse failed, trying line-by-line');
+      containers = output.trim().split('\n').map((l) => JSON.parse(l));
+    }
+
+    const orphans = containers
+      .map((c) => c.names || c.name || c.id)
+      .filter((name) => name.startsWith('nanoclaw-'));
+
     for (const name of orphans) {
       try {
         execSync(stopContainer(name), { stdio: 'pipe' });
-      } catch {
-        /* already stopped */
+      } catch (err) {
+        logger.debug({ name, err }, 'Failed to stop orphaned container');
       }
     }
     if (orphans.length > 0) {
