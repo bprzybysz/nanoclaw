@@ -16,15 +16,31 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
-const QUERY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes of inactivity
+const SSE_HEALTH_TIMEOUT_MS = 3_000;     // 3s to check if SSE server is reachable
+const QUERY_INITIAL_TIMEOUT_MS = 2 * 60 * 1000; // 2 min for first output (catches hung connections)
+const QUERY_IDLE_TIMEOUT_MS = 5 * 60 * 1000;    // 5 min between messages (agent thinking)
 
 class QueryTimeoutError extends Error {
   constructor(ms: number) {
     super(`query() timed out after ${ms}ms of inactivity`);
     this.name = 'QueryTimeoutError';
+  }
+}
+
+/** Pre-flight check: is an SSE MCP server reachable via its /health endpoint? */
+async function checkSseHealth(baseUrl: string): Promise<boolean> {
+  const healthUrl = baseUrl.replace(/\/sse$/, '/health');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SSE_HEALTH_TIMEOUT_MS);
+    const resp = await fetch(healthUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    return resp.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -126,6 +142,10 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+function fmtErr(err: unknown): string {
+  return fmtErr(err);
+}
+
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
@@ -142,7 +162,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
       return entry.summary;
     }
   } catch (err) {
-    log(`Failed to read sessions index: ${err instanceof Error ? err.message : String(err)}`);
+    log(`Failed to read sessions index: ${fmtErr(err)}`);
   }
 
   return null;
@@ -186,7 +206,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 
       log(`Archived conversation to ${filePath}`);
     } catch (err) {
-      log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
+      log(`Failed to archive transcript: ${fmtErr(err)}`);
     }
 
     return {};
@@ -230,7 +250,8 @@ function parseTranscript(content: string): ParsedMessage[] {
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
-    } catch {
+    } catch (err) {
+      log(`Failed to parse transcript line: ${fmtErr(err)} | line: ${line.slice(0, 100)}`);
     }
   }
 
@@ -272,7 +293,11 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
  */
 function shouldClose(): boolean {
   if (fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) {
-    try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+    try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log(`Failed to delete close sentinel: ${fmtErr(err)}`);
+      }
+    }
     return true;
   }
   return false;
@@ -299,13 +324,15 @@ function drainIpcInput(): string[] {
           messages.push(data.text);
         }
       } catch (err) {
-        log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
-        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+        log(`Failed to process input file ${file}: ${fmtErr(err)}`);
+        try { fs.unlinkSync(filePath); } catch (unlinkErr: unknown) {
+          log(`Failed to delete corrupt IPC file ${file}: ${fmtErr(unlinkErr)}`);
+        }
       }
     }
     return messages;
   } catch (err) {
-    log(`IPC drain error: ${err instanceof Error ? err.message : String(err)}`);
+    log(`IPC drain error: ${fmtErr(err)}`);
     return [];
   }
 }
@@ -338,12 +365,19 @@ function waitForIpcMessage(): Promise<string | null> {
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
  */
+interface QueryContext {
+  mcpServerPath: string;
+  containerInput: ContainerInput;
+  sdkEnv: Record<string, string | undefined>;
+  globalClaudeMd?: string;
+  extraDirs: string[];
+  mcpServers: Record<string, McpServerConfig>;
+}
+
 async function runQuery(
   prompt: string,
   sessionId: string | undefined,
-  mcpServerPath: string,
-  containerInput: ContainerInput,
-  sdkEnv: Record<string, string | undefined>,
+  ctx: QueryContext,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
@@ -375,39 +409,19 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
+  const { containerInput, globalClaudeMd, extraDirs, mcpServers } = ctx;
 
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
-      }
-    }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
-  }
-
-  // Activity-based timeout: resets on each message from SDK
+  // Activity-based timeout: starts strict (2min), relaxes after first message (5min)
   let timeoutReject: ((err: QueryTimeoutError) => void) | null = null;
   let timeoutId: ReturnType<typeof setTimeout>;
+  let currentTimeoutMs = QUERY_INITIAL_TIMEOUT_MS; // strict until first message
 
   const resetTimeout = () => {
     clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
       stream.end(); // Close input side to prevent leaks
-      timeoutReject?.(new QueryTimeoutError(QUERY_TIMEOUT_MS));
-    }, QUERY_TIMEOUT_MS);
+      timeoutReject?.(new QueryTimeoutError(currentTimeoutMs));
+    }, currentTimeoutMs);
   };
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -423,11 +437,11 @@ async function runQuery(
           prompt: stream,
           options: {
             cwd: '/workspace/group',
-            additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+            additionalDirectories: ctx.extraDirs.length > 0 ? ctx.extraDirs : undefined,
             resume: sessionId,
             resumeSessionAt: resumeAt,
-            systemPrompt: globalClaudeMd
-              ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+            systemPrompt: ctx.globalClaudeMd
+              ? { type: 'preset' as const, preset: 'claude_code' as const, append: ctx.globalClaudeMd }
               : undefined,
             allowedTools: [
               'Bash',
@@ -441,41 +455,22 @@ async function runQuery(
               'mcp__walter__*',
               'mcp__playwright__*'
             ],
-            model: 'claude-sonnet-4-6',
+            model: 'claude-haiku-4-5',
             thinking: { type: 'adaptive' },
             effort: 'low',
-            env: sdkEnv,
+            env: ctx.sdkEnv,
             permissionMode: 'bypassPermissions',
             allowDangerouslySkipPermissions: true,
             settingSources: ['project', 'user'],
-            mcpServers: {
-              nanoclaw: {
-                command: 'node',
-                args: [mcpServerPath],
-                env: {
-                  NANOCLAW_CHAT_JID: containerInput.chatJid,
-                  NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-                  NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-                },
-              },
-              walter: {
-                type: 'sse' as const,
-                url: `http://${process.env.WALTER_MCP_URL || 'host.containers.internal:8765'}/sse`,
-                headers: process.env.WALTER_API_KEY
-                  ? { Authorization: `Bearer ${process.env.WALTER_API_KEY}` }
-                  : undefined,
-              },
-              playwright: {
-                type: 'sse' as const,
-                url: `http://${process.env.PLAYWRIGHT_MCP_URL || 'host.containers.internal:8766'}/sse`,
-              },
-            },
+            mcpServers: ctx.mcpServers,
             hooks: {
               PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
             },
           }
         })) {
-          resetTimeout(); // Activity detected — reset timeout
+          // First message received — relax timeout to idle pace
+          if (messageCount === 0) currentTimeoutMs = QUERY_IDLE_TIMEOUT_MS;
+          resetTimeout();
           messageCount++;
           const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
           log(`[msg #${messageCount}] type=${msgType}`);
@@ -486,7 +481,8 @@ async function runQuery(
 
           if (message.type === 'system' && message.subtype === 'init') {
             newSessionId = message.session_id;
-            log(`Session initialized: ${newSessionId}`);
+            const tools = 'tools' in message ? (message as unknown as { tools?: string[] }).tools : [];
+            log(`Session initialized: ${newSessionId} | tools: ${tools?.join(', ') || 'none'}`);
           }
 
           if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
@@ -522,13 +518,17 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
+    try { fs.unlinkSync('/tmp/input.json'); } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        log(`Failed to delete /tmp/input.json: ${fmtErr(err)}`);
+      }
+    }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
     writeOutput({
       status: 'error',
       result: null,
-      error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
+      error: `Failed to parse input: ${fmtErr(err)}`
     });
     process.exit(1);
   }
@@ -544,7 +544,66 @@ async function main(): Promise<void> {
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
-  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log(`Failed to delete close sentinel: ${fmtErr(err)}`);
+    }
+  }
+
+  // Load global CLAUDE.md as additional system context (shared across all groups)
+  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  let globalClaudeMd: string | undefined;
+  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
+    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  }
+
+  // Discover additional directories mounted at /workspace/extra/*
+  const extraDirs: string[] = [];
+  const extraBase = '/workspace/extra';
+  if (fs.existsSync(extraBase)) {
+    for (const entry of fs.readdirSync(extraBase)) {
+      const fullPath = path.join(extraBase, entry);
+      if (fs.statSync(fullPath).isDirectory()) {
+        extraDirs.push(fullPath);
+      }
+    }
+  }
+  if (extraDirs.length > 0) {
+    log(`Additional directories: ${extraDirs.join(', ')}`);
+  }
+
+  // Build MCP servers config — health-check SSE servers first, skip unreachable ones
+  const walterUrl = `http://${process.env.WALTER_MCP_URL || 'host.containers.internal:8765'}/sse`;
+  const playwrightUrl = `http://${process.env.PLAYWRIGHT_MCP_URL || 'host.containers.internal:8766'}/sse`;
+  if (!process.env.WALTER_MCP_URL) log('WARN: WALTER_MCP_URL not set, falling back to host.containers.internal:8765');
+  if (!process.env.PLAYWRIGHT_MCP_URL) log('WARN: PLAYWRIGHT_MCP_URL not set, falling back to host.containers.internal:8766');
+
+  const [walterOk, playwrightOk] = await Promise.all([
+    checkSseHealth(walterUrl),
+    checkSseHealth(playwrightUrl),
+  ]);
+  log(`SSE health: walter=${walterOk} playwright=${playwrightOk}`);
+
+  const mcpServers: Record<string, McpServerConfig> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+  if (walterOk) mcpServers.walter = { type: 'sse', url: walterUrl };
+  else log('WARN: Walter MCP unreachable — starting without it');
+  if (playwrightOk) mcpServers.playwright = { type: 'sse', url: playwrightUrl };
+  else log('WARN: Playwright MCP unreachable — starting without it');
+
+  const queryCtx: QueryContext = {
+    mcpServerPath, containerInput, sdkEnv,
+    globalClaudeMd, extraDirs, mcpServers,
+  };
 
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
@@ -663,7 +722,7 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(prompt, sessionId, queryCtx, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -695,7 +754,7 @@ async function main(): Promise<void> {
       prompt = nextMessage;
     }
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorMessage = fmtErr(err);
     log(`Agent error: ${errorMessage}`);
     writeOutput({
       status: 'error',

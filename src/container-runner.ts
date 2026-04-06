@@ -242,17 +242,10 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
-  // Pass WALTER_API_KEY via --env-file (keeps secret out of ps aux)
-  const walterSecrets = readEnvFile(['WALTER_API_KEY']);
-  if (walterSecrets.WALTER_API_KEY) {
-    const tmpFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
-    fs.writeFileSync(
-      tmpFile,
-      `WALTER_API_KEY=${walterSecrets.WALTER_API_KEY}\n`,
-      { mode: 0o600 },
-    );
-    args.push('--env-file', tmpFile);
-  }
+  // Pass host gateway IP for SSE MCP servers (walter, playwright).
+  // Apple Containers don't resolve host.containers.internal — use bridge100 IP.
+  args.push('-e', `WALTER_MCP_URL=${CONTAINER_HOST_GATEWAY}:8765`);
+  args.push('-e', `PLAYWRIGHT_MCP_URL=${CONTAINER_HOST_GATEWAY}:8766`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -455,8 +448,13 @@ export async function runContainerAgent(
       const secretsFile = path.join(DATA_DIR, `.env-secrets-${containerName}`);
       try {
         fs.unlinkSync(secretsFile);
-      } catch {
-        /* may not exist */
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.warn(
+            { secretsFile, err },
+            'Failed to delete secrets env file',
+          );
+        }
       }
 
       const duration = Date.now() - startTime;

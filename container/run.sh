@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RUNTIME="${CONTAINER_RUNTIME:-podman}"
+RUNTIME="${CONTAINER_RUNTIME:-container}"
 IMAGE="nanoclaw-agent:latest"
 WALTER_MCP_URL="${WALTER_MCP_URL:-host.containers.internal:8765}"
 PLAYWRIGHT_MCP_URL="${PLAYWRIGHT_MCP_URL:-host.containers.internal:8766}"

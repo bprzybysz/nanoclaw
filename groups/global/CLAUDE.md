@@ -78,6 +78,16 @@ Rules:
 
 To record diary answers from conversation, call `mcp__walter__diary_write` with the section and data.
 
+## Form Callback Relay
+
+When you receive a `callback_query` from a user interacting with an inline keyboard form (messages prefixed with `[session_id]`), relay the response to Walter:
+
+```
+mcp__walter__submit_form_response(session_id="<id>", answer="<callback_data or text>")
+```
+
+This enables async form flows (diary, surveys) without blocking. Walter sends the questions; you relay the answers.
+
 ## What You Can Do
 
 • Answer questions and have conversations
