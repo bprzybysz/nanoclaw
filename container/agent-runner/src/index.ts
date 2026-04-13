@@ -595,7 +595,14 @@ async function main(): Promise<void> {
       },
     },
   };
-  if (walterOk) mcpServers.walter = { type: 'sse', url: walterUrl };
+  if (walterOk) {
+    const walterApiKey = process.env.WALTER_API_KEY;
+    mcpServers.walter = {
+      type: 'sse',
+      url: walterUrl,
+      ...(walterApiKey ? { headers: { Authorization: `Bearer ${walterApiKey}` } } : {}),
+    };
+  }
   else log('WARN: Walter MCP unreachable — starting without it');
   if (playwrightOk) mcpServers.playwright = { type: 'sse', url: playwrightUrl };
   else log('WARN: Playwright MCP unreachable — starting without it');

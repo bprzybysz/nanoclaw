@@ -246,6 +246,9 @@ function buildContainerArgs(
   // Apple Containers don't resolve host.containers.internal — use bridge100 IP.
   args.push('-e', `WALTER_MCP_URL=${CONTAINER_HOST_GATEWAY}:8765`);
   args.push('-e', `PLAYWRIGHT_MCP_URL=${CONTAINER_HOST_GATEWAY}:8766`);
+  if (process.env.WALTER_API_KEY) {
+    args.push('-e', `WALTER_API_KEY=${process.env.WALTER_API_KEY}`);
+  }
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
