@@ -18,6 +18,9 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { resolveModel, DEFAULT_MODEL } from './model.js';
+
+const ENV_MODEL = process.env.NANOCLAW_AGENT_MODEL || DEFAULT_MODEL;
 
 const SSE_HEALTH_TIMEOUT_MS = 3_000;     // 3s to check if SSE server is reachable
 const QUERY_INITIAL_TIMEOUT_MS = 2 * 60 * 1000; // 2 min for first output (catches hung connections)
@@ -379,6 +382,7 @@ async function runQuery(
   sessionId: string | undefined,
   ctx: QueryContext,
   resumeAt?: string,
+  model: string = ENV_MODEL,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -455,7 +459,7 @@ async function runQuery(
               'mcp__walter__*',
               'mcp__playwright__*'
             ],
-            model: 'claude-haiku-4-5',
+            model,
             thinking: { type: 'adaptive' },
             effort: 'low',
             env: ctx.sdkEnv,
@@ -629,7 +633,18 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, queryCtx, resumeAt);
+      const { model, prompt: cleanPrompt } = resolveModel(prompt, ENV_MODEL);
+      const overrideMarker = cleanPrompt !== prompt ? ' (prefix override)' : '';
+      log(`Model: ${model}${overrideMarker}`);
+      // Guard: if the user sent only `!alias`, `cleanPrompt` is empty — don't
+      // feed an empty stream to the SDK. Fall back to the original prompt so
+      // the agent still sees "something" while the alias still applies.
+      const finalPrompt = cleanPrompt.trim().length === 0 ? prompt : cleanPrompt;
+      if (cleanPrompt.trim().length === 0 && cleanPrompt !== prompt) {
+        log('WARN: prefix-only message, sending original prompt through with alias applied');
+      }
+
+      const queryResult = await runQuery(finalPrompt, sessionId, queryCtx, resumeAt, model);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

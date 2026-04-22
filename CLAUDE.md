@@ -69,4 +69,5 @@ Agent accesses Walter MCP tools via SSE at `host.containers.internal:8765`.
 No mounts needed — all tools accessed over HTTP.
 Config: `WALTER_MCP_URL` env var (default: host.containers.internal:8765).
 Auth: `WALTER_API_KEY` env var (Bearer token).
-Model: claude-sonnet-4-6, adaptive thinking, low effort.
+Model: env-driven (`NANOCLAW_AGENT_MODEL`, default `claude-sonnet-4-6`), adaptive thinking, low effort.
+Per-message override: prefix message with `!opus`, `!sonnet`, or `!haiku` to escalate/downshift for that turn only. Unknown `!prefix` passes through unchanged.
